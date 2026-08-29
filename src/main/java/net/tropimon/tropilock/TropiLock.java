@@ -24,22 +24,8 @@ public class TropiLock implements ClientModInitializer {
     public static double targetX = 0.0;
     public static double targetZ = 0.0;
 
-    /** Point de depart de la droite, capture au moment du verrouillage. */
-    private static double originX = 0.0;
-    private static double originZ = 0.0;
-    private static boolean hasOrigin = false;
-
     /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
     private static final double RELEASE_RADIUS = 20.0;
-
-    /** Degres d'interception par bloc d'ecart a la droite. */
-    private static final float CROSS_GAIN = 2.5F;
-
-    /** Angle d'interception maximal, en degres. */
-    private static final float MAX_INTERCEPT = 35.0F;
-
-    /** Mettre a -1.0F si le mod s'eloigne de la ligne au lieu d'y revenir. */
-    private static final float CROSS_SIGN = -1.0F;
 
     /** Gain proportionnel : nervosite du virage. */
     private static final float GAIN_P = 4.0F;
@@ -51,16 +37,14 @@ public class TropiLock implements ClientModInitializer {
     private static final float MAX_TURN_RATE = 90.0F;
 
     /** En dessous de cet ecart, on considere qu'on est aligne. */
-    private static final float DEADZONE_DEGREES = 0.15F;
+    private static final float DEADZONE_DEGREES = 0.4F;
 
     private static KeyBinding toggleKey;
-    private static boolean debug = false;
 
     // Etat du correcteur, remis a zero a chaque activation.
     private static float lastYaw = 0.0F;
     private static long lastTimeNanos = 0L;
     private static boolean hasHistory = false;
-    private static float lastCross = 0.0F;
 
     public static boolean isActive() {
         if (!locked) {
@@ -79,92 +63,24 @@ public class TropiLock implements ClientModInitializer {
         return vehicle != null && vehicle != client.player;
     }
 
-    /** Ecart lateral signe a la droite depart-cible, en blocs. */
-    private static float crossTrackError(ClientPlayerEntity player) {
-        if (!hasOrigin) {
-            return 0.0F;
-        }
-
-        double lx = targetX - originX;
-        double lz = targetZ - originZ;
-        double length = Math.sqrt(lx * lx + lz * lz);
-
-        if (length < 0.001) {
-            return 0.0F;
-        }
-
-        double ux = lx / length;
-        double uz = lz / length;
-        double px = player.getX() - originX;
-        double pz = player.getZ() - originZ;
-
-        return (float) (ux * pz - uz * px);
-    }
-
-    /**
-     * Cap voulu : direction de la droite, corrigee d'un angle d'interception
-     * proportionnel a l'ecart lateral. C'est ce qui fait la difference entre
-     * suivre une ligne et poursuivre un point.
-     */
-    public static float desiredHeading(ClientPlayerEntity player) {
+    public static float currentBearing(ClientPlayerEntity player) {
         double dx = targetX - player.getX();
         double dz = targetZ - player.getZ();
-        float bearingToTarget =
-                MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
-
-        if (!hasOrigin) {
-            return bearingToTarget;
-        }
-
-        double lx = targetX - originX;
-        double lz = targetZ - originZ;
-        double length = Math.sqrt(lx * lx + lz * lz);
-
-        if (length < 0.001) {
-            return bearingToTarget;
-        }
-
-        // Une fois la cible depassee, on revise directement dessus.
-        double ux = lx / length;
-        double uz = lz / length;
-        double along = (player.getX() - originX) * ux + (player.getZ() - originZ) * uz;
-        if (along > length) {
-            return bearingToTarget;
-        }
-
-        float lineBearing =
-                MathHelper.wrapDegrees((float) (MathHelper.atan2(lz, lx) * 57.2957795) - 90.0F);
-
-        float cross = crossTrackError(player);
-        lastCross = cross;
-
-        float intercept = MathHelper.clamp(
-                CROSS_SIGN * CROSS_GAIN * cross,
-                -MAX_INTERCEPT,
-                MAX_INTERCEPT);
-
-        return MathHelper.wrapDegrees(lineBearing + intercept);
+        return MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
     }
 
     private static void resetController() {
         hasHistory = false;
         lastTimeNanos = 0L;
         lastYaw = 0.0F;
-        lastCross = 0.0F;
     }
 
-    private static void captureOrigin() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client == null || client.player == null) {
-            hasOrigin = false;
-            return;
-        }
-        originX = client.player.getX();
-        originZ = client.player.getZ();
-        hasOrigin = true;
-    }
-
-    /** Correcteur proportionnel-derive sur le cap voulu, independant du framerate. */
+    /**
+     * Correcteur proportionnel-derive.
+     * P pousse vers le cap, D freine quand la monture tourne deja vite.
+     * Tout est exprime en degres par seconde puis ramene au temps ecoule depuis
+     * la frame precedente, donc le comportement ne depend pas du framerate.
+     */
     public static double computeSteeringDelta() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null || client.player == null || client.options == null) {
@@ -190,7 +106,7 @@ public class TropiLock implements ClientModInitializer {
         lastYaw = yaw;
         lastTimeNanos = now;
 
-        float error = MathHelper.wrapDegrees(desiredHeading(player) - yaw);
+        float error = MathHelper.wrapDegrees(currentBearing(player) - yaw);
 
         if (Math.abs(error) < DEADZONE_DEGREES && Math.abs(yawRate) < 1.0F) {
             return 0.0;
@@ -244,14 +160,6 @@ public class TropiLock implements ClientModInitializer {
                                                 .formatted(Formatting.YELLOW));
                                 return 1;
                             }))
-                    .then(ClientCommandManager.literal("debug")
-                            .executes(ctx -> {
-                                debug = !debug;
-                                ctx.getSource().sendFeedback(
-                                        Text.literal("[TropiLock] Debug " + (debug ? "actif." : "coupe."))
-                                                .formatted(Formatting.GRAY));
-                                return 1;
-                            }))
                     .then(ClientCommandManager.argument("x", DoubleArgumentType.doubleArg())
                             .then(ClientCommandManager.argument("z", DoubleArgumentType.doubleArg())
                                     .executes(ctx -> {
@@ -259,11 +167,10 @@ public class TropiLock implements ClientModInitializer {
                                         targetZ = DoubleArgumentType.getDouble(ctx, "z");
                                         hasTarget = true;
                                         locked = true;
-                                        captureOrigin();
                                         resetController();
                                         ctx.getSource().sendFeedback(
                                                 Text.literal(String.format(
-                                                        "[TropiLock] Rail trace vers %.0f / %.0f (%s pour liberer).",
+                                                        "[TropiLock] Cap verrouille sur %.0f / %.0f (%s pour liberer).",
                                                         targetX, targetZ, toggleKeyName()))
                                                         .formatted(Formatting.GREEN));
                                         return 1;
@@ -281,13 +188,10 @@ public class TropiLock implements ClientModInitializer {
                 } else {
                     locked = !locked;
                     resetController();
-                    if (locked) {
-                        captureOrigin();
-                    }
                     if (client.player != null) {
                         client.player.sendMessage(
                                 Text.literal(locked
-                                        ? "[TropiLock] Rail retrace depuis ta position."
+                                        ? "[TropiLock] Verrouillage actif."
                                         : "[TropiLock] Verrouillage desactive.")
                                         .formatted(locked ? Formatting.GREEN : Formatting.YELLOW), false);
                     }
@@ -315,15 +219,7 @@ public class TropiLock implements ClientModInitializer {
             }
 
             if (!isMounted()) {
-                applyYaw(player, desiredHeading(player));
-            }
-
-            if (debug) {
-                player.sendMessage(
-                        Text.literal(String.format(
-                                "TropiLock >> %.0f blocs -- ecart lateral %.1f",
-                                distance, lastCross))
-                                .formatted(Formatting.AQUA), true);
+                applyYaw(player, currentBearing(player));
             }
         });
     }
