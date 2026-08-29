@@ -27,16 +27,24 @@ public class TropiLock implements ClientModInitializer {
     /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
     private static final double RELEASE_RADIUS = 20.0;
 
-    /** Correction maximale appliquee en une frame, en degres. */
-    private static final float MAX_TURN_PER_FRAME = 2.5F;
+    /** Gain proportionnel : nervosite du virage (par seconde). Baisser si ca oscille. */
+    private static final float GAIN_P = 2.0F;
 
-    /** Fraction de l'ecart corrigee par frame (amortissement). */
-    private static final float TURN_GAIN = 0.35F;
+    /** Gain derive : freinage anticipe. Monter si ca depasse le cap. */
+    private static final float GAIN_D = 0.35F;
+
+    /** Vitesse de rotation maximale autorisee, en degres par seconde. */
+    private static final float MAX_TURN_RATE = 90.0F;
 
     /** En dessous de cet ecart, on considere qu'on est aligne. */
-    private static final float DEADZONE_DEGREES = 0.3F;
+    private static final float DEADZONE_DEGREES = 0.4F;
 
     private static KeyBinding toggleKey;
+
+    // Etat du correcteur, remis a zero a chaque activation.
+    private static float lastYaw = 0.0F;
+    private static long lastTimeNanos = 0L;
+    private static boolean hasHistory = false;
 
     public static boolean isActive() {
         if (!locked) {
@@ -46,7 +54,6 @@ public class TropiLock implements ClientModInitializer {
         return client != null && client.player != null && client.currentScreen == null;
     }
 
-    /** Vrai si le joueur est actuellement sur une monture. */
     public static boolean isMounted() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null || client.player == null) {
@@ -56,16 +63,23 @@ public class TropiLock implements ClientModInitializer {
         return vehicle != null && vehicle != client.player;
     }
 
-    /** Cap voulu vers la cible, en degres Minecraft. */
     public static float currentBearing(ClientPlayerEntity player) {
         double dx = targetX - player.getX();
         double dz = targetZ - player.getZ();
         return MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
     }
 
+    private static void resetController() {
+        hasHistory = false;
+        lastTimeNanos = 0L;
+        lastYaw = 0.0F;
+    }
+
     /**
-     * Delta souris horizontal a injecter pour se rapprocher du cap.
-     * On inverse la formule vanilla : yawDelta = cursorDeltaX * facteur * 0.15
+     * Correcteur proportionnel-derive.
+     * Le terme P pousse vers le cap, le terme D freine quand la monture tourne deja vite.
+     * Tout est exprime en degres par seconde puis ramene au temps ecoule depuis la frame
+     * precedente, donc le comportement ne depend plus du framerate.
      */
     public static double computeSteeringDelta() {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -74,13 +88,36 @@ public class TropiLock implements ClientModInitializer {
         }
 
         ClientPlayerEntity player = client.player;
-        float error = MathHelper.wrapDegrees(currentBearing(player) - player.getYaw());
+        float yaw = player.getYaw();
+        long now = System.nanoTime();
 
-        if (Math.abs(error) < DEADZONE_DEGREES) {
+        if (!hasHistory) {
+            lastYaw = yaw;
+            lastTimeNanos = now;
+            hasHistory = true;
             return 0.0;
         }
 
-        float step = MathHelper.clamp(error * TURN_GAIN, -MAX_TURN_PER_FRAME, MAX_TURN_PER_FRAME);
+        float dt = (float) ((now - lastTimeNanos) / 1_000_000_000.0);
+        dt = MathHelper.clamp(dt, 0.001F, 0.1F);
+
+        float yawRate = MathHelper.wrapDegrees(yaw - lastYaw) / dt;
+
+        lastYaw = yaw;
+        lastTimeNanos = now;
+
+        float error = MathHelper.wrapDegrees(currentBearing(player) - yaw);
+
+        if (Math.abs(error) < DEADZONE_DEGREES && Math.abs(yawRate) < 1.0F) {
+            return 0.0;
+        }
+
+        float commandedRate = MathHelper.clamp(
+                GAIN_P * error - GAIN_D * yawRate,
+                -MAX_TURN_RATE,
+                MAX_TURN_RATE);
+
+        float step = commandedRate * dt;
 
         double sensitivity = client.options.getMouseSensitivity().getValue();
         double base = sensitivity * 0.6 + 0.2;
@@ -117,6 +154,7 @@ public class TropiLock implements ClientModInitializer {
                     .then(ClientCommandManager.literal("off")
                             .executes(ctx -> {
                                 locked = false;
+                                resetController();
                                 ctx.getSource().sendFeedback(
                                         Text.literal("[TropiLock] Verrouillage desactive.")
                                                 .formatted(Formatting.YELLOW));
@@ -129,6 +167,7 @@ public class TropiLock implements ClientModInitializer {
                                         targetZ = DoubleArgumentType.getDouble(ctx, "z");
                                         hasTarget = true;
                                         locked = true;
+                                        resetController();
                                         ctx.getSource().sendFeedback(
                                                 Text.literal(String.format(
                                                         "[TropiLock] Cap verrouille sur %.0f / %.0f (%s pour liberer).",
@@ -148,6 +187,7 @@ public class TropiLock implements ClientModInitializer {
                     }
                 } else {
                     locked = !locked;
+                    resetController();
                     if (client.player != null) {
                         client.player.sendMessage(
                                 Text.literal(locked
@@ -169,6 +209,7 @@ public class TropiLock implements ClientModInitializer {
 
             if (distance < RELEASE_RADIUS) {
                 locked = false;
+                resetController();
                 player.sendMessage(
                         Text.literal(String.format(
                                 "[TropiLock] Cible a moins de %.0f blocs, verrouillage libere.",
@@ -177,8 +218,6 @@ public class TropiLock implements ClientModInitializer {
                 return;
             }
 
-            // A pied : ecriture directe du yaw, personne ne vient l'ecraser.
-            // En monture : on ne touche a rien ici, c'est le delta souris qui pilote.
             if (!isMounted()) {
                 applyYaw(player, currentBearing(player));
             }
