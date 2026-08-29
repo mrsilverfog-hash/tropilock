@@ -28,10 +28,10 @@ public class TropiLock implements ClientModInitializer {
     private static final double RELEASE_RADIUS = 20.0;
 
     /** Gain proportionnel : nervosite du virage (par seconde). Baisser si ca oscille. */
-    private static final float GAIN_P = 2.0F;
+    private static final float GAIN_P = 4.0F;
 
     /** Gain derive : freinage anticipe. Monter si ca depasse le cap. */
-    private static final float GAIN_D = 0.35F;
+    private static final float GAIN_D = 1.2F;
 
     /** Vitesse de rotation maximale autorisee, en degres par seconde. */
     private static final float MAX_TURN_RATE = 90.0F;
