@@ -24,14 +24,25 @@ public class TropiLock implements ClientModInitializer {
     public static double targetX = 0.0;
     public static double targetZ = 0.0;
 
+    /** Point de depart de la droite, capture au moment du verrouillage. */
+    private static double originX = 0.0;
+    private static double originZ = 0.0;
+    private static boolean hasOrigin = false;
+
     /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
     private static final double RELEASE_RADIUS = 20.0;
 
+    /** Degres d'interception par bloc d'ecart a la droite. */
+    private static final float CROSS_GAIN = 2.5F;
+
+    /** Angle d'interception maximal, en degres. */
+    private static final float MAX_INTERCEPT = 35.0F;
+
+    /** Mettre a -1.0F si le mod s'eloigne de la ligne au lieu d'y revenir. */
+    private static final float CROSS_SIGN = 1.0F;
+
     /** Gain proportionnel : nervosite du virage. */
     private static final float GAIN_P = 4.0F;
-
-    /** Gain integral : supprime le biais residuel. Monter si ca vise toujours a cote. */
-    private static final float GAIN_I = 0.0F;
 
     /** Gain derive : freinage anticipe. Monter si ca depasse le cap. */
     private static final float GAIN_D = 1.2F;
@@ -39,22 +50,17 @@ public class TropiLock implements ClientModInitializer {
     /** Vitesse de rotation maximale autorisee, en degres par seconde. */
     private static final float MAX_TURN_RATE = 90.0F;
 
-    /** Plafond de l'accumulateur integral, en degres-secondes (anti-emballement). */
-    private static final float INTEGRAL_LIMIT = 25.0F;
-
-    /** L'integrale n'accumule que sous cet ecart : inutile pendant le gros virage initial. */
-    private static final float INTEGRAL_WINDOW = 20.0F;
-
     /** En dessous de cet ecart, on considere qu'on est aligne. */
     private static final float DEADZONE_DEGREES = 0.15F;
 
     private static KeyBinding toggleKey;
+    private static boolean debug = false;
 
     // Etat du correcteur, remis a zero a chaque activation.
     private static float lastYaw = 0.0F;
     private static long lastTimeNanos = 0L;
     private static boolean hasHistory = false;
-    private static float integral = 0.0F;
+    private static float lastCross = 0.0F;
 
     public static boolean isActive() {
         if (!locked) {
@@ -73,24 +79,92 @@ public class TropiLock implements ClientModInitializer {
         return vehicle != null && vehicle != client.player;
     }
 
-    public static float currentBearing(ClientPlayerEntity player) {
+    /** Ecart lateral signe a la droite depart-cible, en blocs. */
+    private static float crossTrackError(ClientPlayerEntity player) {
+        if (!hasOrigin) {
+            return 0.0F;
+        }
+
+        double lx = targetX - originX;
+        double lz = targetZ - originZ;
+        double length = Math.sqrt(lx * lx + lz * lz);
+
+        if (length < 0.001) {
+            return 0.0F;
+        }
+
+        double ux = lx / length;
+        double uz = lz / length;
+        double px = player.getX() - originX;
+        double pz = player.getZ() - originZ;
+
+        return (float) (ux * pz - uz * px);
+    }
+
+    /**
+     * Cap voulu : direction de la droite, corrigee d'un angle d'interception
+     * proportionnel a l'ecart lateral. C'est ce qui fait la difference entre
+     * suivre une ligne et poursuivre un point.
+     */
+    public static float desiredHeading(ClientPlayerEntity player) {
         double dx = targetX - player.getX();
         double dz = targetZ - player.getZ();
-        return MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
+        float bearingToTarget =
+                MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
+
+        if (!hasOrigin) {
+            return bearingToTarget;
+        }
+
+        double lx = targetX - originX;
+        double lz = targetZ - originZ;
+        double length = Math.sqrt(lx * lx + lz * lz);
+
+        if (length < 0.001) {
+            return bearingToTarget;
+        }
+
+        // Une fois la cible depassee, on revise directement dessus.
+        double ux = lx / length;
+        double uz = lz / length;
+        double along = (player.getX() - originX) * ux + (player.getZ() - originZ) * uz;
+        if (along > length) {
+            return bearingToTarget;
+        }
+
+        float lineBearing =
+                MathHelper.wrapDegrees((float) (MathHelper.atan2(lz, lx) * 57.2957795) - 90.0F);
+
+        float cross = crossTrackError(player);
+        lastCross = cross;
+
+        float intercept = MathHelper.clamp(
+                CROSS_SIGN * CROSS_GAIN * cross,
+                -MAX_INTERCEPT,
+                MAX_INTERCEPT);
+
+        return MathHelper.wrapDegrees(lineBearing + intercept);
     }
 
     private static void resetController() {
         hasHistory = false;
         lastTimeNanos = 0L;
         lastYaw = 0.0F;
-        integral = 0.0F;
+        lastCross = 0.0F;
     }
 
-    /**
-     * Correcteur proportionnel-integral-derive.
-     * P pousse vers le cap, I efface le biais qui dure, D freine avant l'arrivee.
-     * Tout est exprime en degres par seconde, donc independant du framerate.
-     */
+    private static void captureOrigin() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.player == null) {
+            hasOrigin = false;
+            return;
+        }
+        originX = client.player.getX();
+        originZ = client.player.getZ();
+        hasOrigin = true;
+    }
+
+    /** Correcteur proportionnel-derive sur le cap voulu, independant du framerate. */
     public static double computeSteeringDelta() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null || client.player == null || client.options == null) {
@@ -116,27 +190,16 @@ public class TropiLock implements ClientModInitializer {
         lastYaw = yaw;
         lastTimeNanos = now;
 
-        float error = MathHelper.wrapDegrees(currentBearing(player) - yaw);
-
-        // Accumulation seulement une fois le gros du virage passe, sinon l'integrale
-        // se gave pendant la mise en ligne et fait depasser le cap.
-        if (Math.abs(error) < INTEGRAL_WINDOW) {
-            integral = MathHelper.clamp(integral + error * dt, -INTEGRAL_LIMIT, INTEGRAL_LIMIT);
-        } else {
-            integral = 0.0F;
-        }
+        float error = MathHelper.wrapDegrees(desiredHeading(player) - yaw);
 
         if (Math.abs(error) < DEADZONE_DEGREES && Math.abs(yawRate) < 1.0F) {
             return 0.0;
         }
 
-        float rawRate = GAIN_P * error + GAIN_I * integral - GAIN_D * yawRate;
-        float commandedRate = MathHelper.clamp(rawRate, -MAX_TURN_RATE, MAX_TURN_RATE);
-
-        // Anti-emballement : si la commande sature, on arrete de gonfler l'integrale.
-        if (rawRate != commandedRate) {
-            integral = MathHelper.clamp(integral, -INTEGRAL_LIMIT * 0.5F, INTEGRAL_LIMIT * 0.5F);
-        }
+        float commandedRate = MathHelper.clamp(
+                GAIN_P * error - GAIN_D * yawRate,
+                -MAX_TURN_RATE,
+                MAX_TURN_RATE);
 
         float step = commandedRate * dt;
 
@@ -181,6 +244,14 @@ public class TropiLock implements ClientModInitializer {
                                                 .formatted(Formatting.YELLOW));
                                 return 1;
                             }))
+                    .then(ClientCommandManager.literal("debug")
+                            .executes(ctx -> {
+                                debug = !debug;
+                                ctx.getSource().sendFeedback(
+                                        Text.literal("[TropiLock] Debug " + (debug ? "actif." : "coupe."))
+                                                .formatted(Formatting.GRAY));
+                                return 1;
+                            }))
                     .then(ClientCommandManager.argument("x", DoubleArgumentType.doubleArg())
                             .then(ClientCommandManager.argument("z", DoubleArgumentType.doubleArg())
                                     .executes(ctx -> {
@@ -188,10 +259,11 @@ public class TropiLock implements ClientModInitializer {
                                         targetZ = DoubleArgumentType.getDouble(ctx, "z");
                                         hasTarget = true;
                                         locked = true;
+                                        captureOrigin();
                                         resetController();
                                         ctx.getSource().sendFeedback(
                                                 Text.literal(String.format(
-                                                        "[TropiLock] Cap verrouille sur %.0f / %.0f (%s pour liberer).",
+                                                        "[TropiLock] Rail trace vers %.0f / %.0f (%s pour liberer).",
                                                         targetX, targetZ, toggleKeyName()))
                                                         .formatted(Formatting.GREEN));
                                         return 1;
@@ -209,10 +281,13 @@ public class TropiLock implements ClientModInitializer {
                 } else {
                     locked = !locked;
                     resetController();
+                    if (locked) {
+                        captureOrigin();
+                    }
                     if (client.player != null) {
                         client.player.sendMessage(
                                 Text.literal(locked
-                                        ? "[TropiLock] Verrouillage actif."
+                                        ? "[TropiLock] Rail retrace depuis ta position."
                                         : "[TropiLock] Verrouillage desactive.")
                                         .formatted(locked ? Formatting.GREEN : Formatting.YELLOW), false);
                     }
@@ -240,7 +315,15 @@ public class TropiLock implements ClientModInitializer {
             }
 
             if (!isMounted()) {
-                applyYaw(player, currentBearing(player));
+                applyYaw(player, desiredHeading(player));
+            }
+
+            if (debug) {
+                player.sendMessage(
+                        Text.literal(String.format(
+                                "TropiLock >> %.0f blocs -- ecart lateral %.1f",
+                                distance, lastCross))
+                                .formatted(Formatting.AQUA), true);
             }
         });
     }
