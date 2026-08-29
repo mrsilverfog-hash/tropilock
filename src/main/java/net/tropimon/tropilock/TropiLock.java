@@ -31,7 +31,7 @@ public class TropiLock implements ClientModInitializer {
     private static final float GAIN_P = 4.0F;
 
     /** Gain integral : supprime le biais residuel. Monter si ca vise toujours a cote. */
-    private static final float GAIN_I = 0.8F;
+    private static final float GAIN_I = 0.0F;
 
     /** Gain derive : freinage anticipe. Monter si ca depasse le cap. */
     private static final float GAIN_D = 1.2F;
