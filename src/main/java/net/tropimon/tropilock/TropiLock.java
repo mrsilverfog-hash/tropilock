@@ -24,6 +24,9 @@ public class TropiLock implements ClientModInitializer {
     public static double targetX = 0.0;
     public static double targetZ = 0.0;
 
+    /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
+    private static final double RELEASE_RADIUS = 20.0;
+
     private static KeyBinding toggleKey;
 
     public static boolean shouldBlockMouseYaw() {
@@ -98,10 +101,12 @@ public class TropiLock implements ClientModInitializer {
             double dz = targetZ - player.getZ();
             double distance = Math.sqrt(dx * dx + dz * dz);
 
-            if (distance < 3.0) {
+            if (distance < RELEASE_RADIUS) {
                 locked = false;
                 player.sendMessage(
-                        Text.literal("[TropiLock] Cible atteinte, verrouillage libere.")
+                        Text.literal(String.format(
+                                "[TropiLock] Cible a moins de %.0f blocs, verrouillage libere.",
+                                RELEASE_RADIUS))
                                 .formatted(Formatting.GREEN), false);
                 return;
             }
