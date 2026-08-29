@@ -27,8 +27,11 @@ public class TropiLock implements ClientModInitializer {
     /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
     private static final double RELEASE_RADIUS = 20.0;
 
-    /** Gain proportionnel : nervosite du virage (par seconde). Baisser si ca oscille. */
+    /** Gain proportionnel : nervosite du virage. */
     private static final float GAIN_P = 4.0F;
+
+    /** Gain integral : supprime le biais residuel. Monter si ca vise toujours a cote. */
+    private static final float GAIN_I = 0.8F;
 
     /** Gain derive : freinage anticipe. Monter si ca depasse le cap. */
     private static final float GAIN_D = 1.2F;
@@ -36,8 +39,14 @@ public class TropiLock implements ClientModInitializer {
     /** Vitesse de rotation maximale autorisee, en degres par seconde. */
     private static final float MAX_TURN_RATE = 90.0F;
 
+    /** Plafond de l'accumulateur integral, en degres-secondes (anti-emballement). */
+    private static final float INTEGRAL_LIMIT = 25.0F;
+
+    /** L'integrale n'accumule que sous cet ecart : inutile pendant le gros virage initial. */
+    private static final float INTEGRAL_WINDOW = 20.0F;
+
     /** En dessous de cet ecart, on considere qu'on est aligne. */
-    private static final float DEADZONE_DEGREES = 0.4F;
+    private static final float DEADZONE_DEGREES = 0.15F;
 
     private static KeyBinding toggleKey;
 
@@ -45,6 +54,7 @@ public class TropiLock implements ClientModInitializer {
     private static float lastYaw = 0.0F;
     private static long lastTimeNanos = 0L;
     private static boolean hasHistory = false;
+    private static float integral = 0.0F;
 
     public static boolean isActive() {
         if (!locked) {
@@ -73,13 +83,13 @@ public class TropiLock implements ClientModInitializer {
         hasHistory = false;
         lastTimeNanos = 0L;
         lastYaw = 0.0F;
+        integral = 0.0F;
     }
 
     /**
-     * Correcteur proportionnel-derive.
-     * Le terme P pousse vers le cap, le terme D freine quand la monture tourne deja vite.
-     * Tout est exprime en degres par seconde puis ramene au temps ecoule depuis la frame
-     * precedente, donc le comportement ne depend plus du framerate.
+     * Correcteur proportionnel-integral-derive.
+     * P pousse vers le cap, I efface le biais qui dure, D freine avant l'arrivee.
+     * Tout est exprime en degres par seconde, donc independant du framerate.
      */
     public static double computeSteeringDelta() {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -108,14 +118,25 @@ public class TropiLock implements ClientModInitializer {
 
         float error = MathHelper.wrapDegrees(currentBearing(player) - yaw);
 
+        // Accumulation seulement une fois le gros du virage passe, sinon l'integrale
+        // se gave pendant la mise en ligne et fait depasser le cap.
+        if (Math.abs(error) < INTEGRAL_WINDOW) {
+            integral = MathHelper.clamp(integral + error * dt, -INTEGRAL_LIMIT, INTEGRAL_LIMIT);
+        } else {
+            integral = 0.0F;
+        }
+
         if (Math.abs(error) < DEADZONE_DEGREES && Math.abs(yawRate) < 1.0F) {
             return 0.0;
         }
 
-        float commandedRate = MathHelper.clamp(
-                GAIN_P * error - GAIN_D * yawRate,
-                -MAX_TURN_RATE,
-                MAX_TURN_RATE);
+        float rawRate = GAIN_P * error + GAIN_I * integral - GAIN_D * yawRate;
+        float commandedRate = MathHelper.clamp(rawRate, -MAX_TURN_RATE, MAX_TURN_RATE);
+
+        // Anti-emballement : si la commande sature, on arrete de gonfler l'integrale.
+        if (rawRate != commandedRate) {
+            integral = MathHelper.clamp(integral, -INTEGRAL_LIMIT * 0.5F, INTEGRAL_LIMIT * 0.5F);
+        }
 
         float step = commandedRate * dt;
 
