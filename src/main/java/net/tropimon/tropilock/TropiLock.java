@@ -9,6 +9,8 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.math.MathHelper;
@@ -96,17 +98,39 @@ public class TropiLock implements ClientModInitializer {
             }
 
             float yaw = MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
-            player.setYaw(yaw);
-            player.prevYaw = yaw;
-            player.headYaw = yaw;
-            player.prevHeadYaw = yaw;
-            player.bodyYaw = yaw;
-            player.prevBodyYaw = yaw;
+
+            applyYaw(player, yaw);
+
+            Entity vehicle = player.getRootVehicle();
+            float vehicleYawBefore = Float.NaN;
+            if (vehicle != null && vehicle != player) {
+                vehicleYawBefore = vehicle.getYaw();
+                applyYaw(vehicle, yaw);
+            }
+
+            String debug;
+            if (Float.isNaN(vehicleYawBefore)) {
+                debug = "sans monture";
+            } else {
+                debug = String.format("monture %s / yaw avant %.0f",
+                        vehicle.getType().getName().getString(), vehicleYawBefore);
+            }
 
             player.sendMessage(
-                    Text.literal(String.format("TropiLock >> %.0f blocs -- cible %.0f / %.0f",
-                            distance, targetX, targetZ))
+                    Text.literal(String.format("TropiLock >> %.0f blocs -- cap %.0f -- %s",
+                            distance, yaw, debug))
                             .formatted(Formatting.AQUA), true);
         });
+    }
+
+    private static void applyYaw(Entity entity, float yaw) {
+        entity.setYaw(yaw);
+        entity.prevYaw = yaw;
+        entity.setHeadYaw(yaw);
+        if (entity instanceof LivingEntity living) {
+            living.prevHeadYaw = yaw;
+            living.bodyYaw = yaw;
+            living.prevBodyYaw = yaw;
+        }
     }
 }
