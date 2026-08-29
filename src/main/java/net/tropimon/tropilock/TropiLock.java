@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -24,6 +25,14 @@ public class TropiLock implements ClientModInitializer {
     public static double targetZ = 0.0;
 
     private static KeyBinding toggleKey;
+
+    public static boolean shouldBlockMouseYaw() {
+        if (!locked) {
+            return false;
+        }
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client != null && client.player != null && client.currentScreen == null;
+    }
 
     @Override
     public void onInitializeClient() {
@@ -97,28 +106,26 @@ public class TropiLock implements ClientModInitializer {
                 return;
             }
 
-            float yaw = MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
+            float cap = MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
+            float playerYawBefore = player.getYaw();
 
-            applyYaw(player, yaw);
+            applyYaw(player, cap);
 
             Entity vehicle = player.getRootVehicle();
+            boolean mounted = vehicle != null && vehicle != player;
             float vehicleYawBefore = Float.NaN;
-            if (vehicle != null && vehicle != player) {
+            if (mounted) {
                 vehicleYawBefore = vehicle.getYaw();
-                applyYaw(vehicle, yaw);
+                applyYaw(vehicle, cap);
             }
 
-            String debug;
-            if (Float.isNaN(vehicleYawBefore)) {
-                debug = "sans monture";
-            } else {
-                debug = String.format("monture %s / yaw avant %.0f",
-                        vehicle.getType().getName().getString(), vehicleYawBefore);
-            }
+            String state = mounted
+                    ? String.format("joueur %.0f / monture %.0f", playerYawBefore, vehicleYawBefore)
+                    : String.format("joueur %.0f / a pied", playerYawBefore);
 
             player.sendMessage(
                     Text.literal(String.format("TropiLock >> %.0f blocs -- cap %.0f -- %s",
-                            distance, yaw, debug))
+                            distance, cap, state))
                             .formatted(Formatting.AQUA), true);
         });
     }
