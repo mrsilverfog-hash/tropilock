@@ -27,9 +27,18 @@ public class TropiLock implements ClientModInitializer {
     /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
     private static final double RELEASE_RADIUS = 20.0;
 
+    /** Correction maximale appliquee en une frame, en degres. */
+    private static final float MAX_TURN_PER_FRAME = 2.5F;
+
+    /** Fraction de l'ecart corrigee par frame (amortissement). */
+    private static final float TURN_GAIN = 0.35F;
+
+    /** En dessous de cet ecart, on considere qu'on est aligne. */
+    private static final float DEADZONE_DEGREES = 0.3F;
+
     private static KeyBinding toggleKey;
 
-    public static boolean shouldBlockMouseYaw() {
+    public static boolean isActive() {
         if (!locked) {
             return false;
         }
@@ -37,7 +46,53 @@ public class TropiLock implements ClientModInitializer {
         return client != null && client.player != null && client.currentScreen == null;
     }
 
-    /** Nom lisible de la touche actuellement liee au toggle. */
+    /** Vrai si le joueur est actuellement sur une monture. */
+    public static boolean isMounted() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.player == null) {
+            return false;
+        }
+        Entity vehicle = client.player.getRootVehicle();
+        return vehicle != null && vehicle != client.player;
+    }
+
+    /** Cap voulu vers la cible, en degres Minecraft. */
+    public static float currentBearing(ClientPlayerEntity player) {
+        double dx = targetX - player.getX();
+        double dz = targetZ - player.getZ();
+        return MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
+    }
+
+    /**
+     * Delta souris horizontal a injecter pour se rapprocher du cap.
+     * On inverse la formule vanilla : yawDelta = cursorDeltaX * facteur * 0.15
+     */
+    public static double computeSteeringDelta() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.player == null || client.options == null) {
+            return 0.0;
+        }
+
+        ClientPlayerEntity player = client.player;
+        float error = MathHelper.wrapDegrees(currentBearing(player) - player.getYaw());
+
+        if (Math.abs(error) < DEADZONE_DEGREES) {
+            return 0.0;
+        }
+
+        float step = MathHelper.clamp(error * TURN_GAIN, -MAX_TURN_PER_FRAME, MAX_TURN_PER_FRAME);
+
+        double sensitivity = client.options.getMouseSensitivity().getValue();
+        double base = sensitivity * 0.6 + 0.2;
+        double factor = base * base * base * 8.0;
+
+        if (factor <= 0.0) {
+            return 0.0;
+        }
+
+        return step / (factor * 0.15);
+    }
+
     private static String toggleKeyName() {
         if (toggleKey == null) {
             return "touche non definie";
@@ -122,13 +177,10 @@ public class TropiLock implements ClientModInitializer {
                 return;
             }
 
-            float cap = MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
-
-            applyYaw(player, cap);
-
-            Entity vehicle = player.getRootVehicle();
-            if (vehicle != null && vehicle != player) {
-                applyYaw(vehicle, cap);
+            // A pied : ecriture directe du yaw, personne ne vient l'ecraser.
+            // En monture : on ne touche a rien ici, c'est le delta souris qui pilote.
+            if (!isMounted()) {
+                applyYaw(player, currentBearing(player));
             }
         });
     }
