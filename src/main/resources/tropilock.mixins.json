@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.tropimon.tropilock.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "EntityLookMixin",
+    "KeyboardInputMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
