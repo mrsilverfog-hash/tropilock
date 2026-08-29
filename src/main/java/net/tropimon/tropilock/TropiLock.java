@@ -39,7 +39,7 @@ public class TropiLock implements ClientModInitializer {
     private static final float MAX_INTERCEPT = 35.0F;
 
     /** Mettre a -1.0F si le mod s'eloigne de la ligne au lieu d'y revenir. */
-    private static final float CROSS_SIGN = 1.0F;
+    private static final float CROSS_SIGN = -1.0F;
 
     /** Gain proportionnel : nervosite du virage. */
     private static final float GAIN_P = 4.0F;
