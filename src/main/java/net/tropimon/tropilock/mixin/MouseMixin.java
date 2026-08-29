@@ -15,15 +15,16 @@ public abstract class MouseMixin {
     private double cursorDeltaX;
 
     @Inject(method = "updateMouse", at = @At("HEAD"))
-    private void tropilock$killYawDelta(CallbackInfo ci) {
-        if (TropiLock.shouldBlockMouseYaw()) {
-            this.cursorDeltaX = 0.0;
+    private void tropilock$overrideYawDelta(CallbackInfo ci) {
+        if (!TropiLock.isActive()) {
+            return;
         }
-    }
 
-    @Inject(method = "onCursorPos", at = @At("TAIL"), require = 0)
-    private void tropilock$killYawAccumulation(CallbackInfo ci) {
-        if (TropiLock.shouldBlockMouseYaw()) {
+        if (TropiLock.isMounted()) {
+            // On pilote la monture en injectant le mouvement de souris voulu.
+            this.cursorDeltaX = TropiLock.computeSteeringDelta();
+        } else {
+            // A pied, le yaw est ecrit directement : on coupe juste la souris.
             this.cursorDeltaX = 0.0;
         }
     }
