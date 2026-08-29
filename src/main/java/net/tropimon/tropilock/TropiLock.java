@@ -37,6 +37,17 @@ public class TropiLock implements ClientModInitializer {
         return client != null && client.player != null && client.currentScreen == null;
     }
 
+    /** Nom lisible de la touche actuellement liee au toggle. */
+    private static String toggleKeyName() {
+        if (toggleKey == null) {
+            return "touche non definie";
+        }
+        if (toggleKey.isUnbound()) {
+            return "touche non assignee";
+        }
+        return toggleKey.getBoundKeyLocalizedText().getString();
+    }
+
     @Override
     public void onInitializeClient() {
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
@@ -65,8 +76,8 @@ public class TropiLock implements ClientModInitializer {
                                         locked = true;
                                         ctx.getSource().sendFeedback(
                                                 Text.literal(String.format(
-                                                        "[TropiLock] Cap verrouille sur %.0f / %.0f (F8 pour liberer).",
-                                                        targetX, targetZ))
+                                                        "[TropiLock] Cap verrouille sur %.0f / %.0f (%s pour liberer).",
+                                                        targetX, targetZ, toggleKeyName()))
                                                         .formatted(Formatting.GREEN));
                                         return 1;
                                     }))));
