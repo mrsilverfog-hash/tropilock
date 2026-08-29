@@ -112,26 +112,13 @@ public class TropiLock implements ClientModInitializer {
             }
 
             float cap = MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
-            float playerYawBefore = player.getYaw();
 
             applyYaw(player, cap);
 
             Entity vehicle = player.getRootVehicle();
-            boolean mounted = vehicle != null && vehicle != player;
-            float vehicleYawBefore = Float.NaN;
-            if (mounted) {
-                vehicleYawBefore = vehicle.getYaw();
+            if (vehicle != null && vehicle != player) {
                 applyYaw(vehicle, cap);
             }
-
-            String state = mounted
-                    ? String.format("joueur %.0f / monture %.0f", playerYawBefore, vehicleYawBefore)
-                    : String.format("joueur %.0f / a pied", playerYawBefore);
-
-            player.sendMessage(
-                    Text.literal(String.format("TropiLock >> %.0f blocs -- cap %.0f -- %s",
-                            distance, cap, state))
-                            .formatted(Formatting.AQUA), true);
         });
     }
 
