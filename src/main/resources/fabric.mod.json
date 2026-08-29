@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "tropilock",
+  "version": "${version}",
+  "name": "TropiLock",
+  "description": "Verrouille la trajectoire en ligne droite vers des coordonnees.",
+  "authors": ["Maitre"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["net.tropimon.tropilock.TropiLock"]
+  },
+  "mixins": ["tropilock.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "~1.21",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
