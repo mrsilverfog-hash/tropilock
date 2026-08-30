@@ -27,24 +27,29 @@ public class TropiLock implements ClientModInitializer {
     /** Distance a la cible (en blocs) a laquelle le verrouillage se libere tout seul. */
     private static final double RELEASE_RADIUS = 20.0;
 
-    /** Gain proportionnel : nervosite du virage. */
-    private static final float GAIN_P = 4.0F;
-
-    /** Gain derive : freinage anticipe. Monter si ca depasse le cap. */
-    private static final float GAIN_D = 1.2F;
+    /** Fraction de l'ecart comblee par frame. Sous 1.0 : approche sans depassement. */
+    private static final float APPROACH = 0.5F;
 
     /** Vitesse de rotation maximale autorisee, en degres par seconde. */
-    private static final float MAX_TURN_RATE = 90.0F;
+    private static final float MAX_TURN_RATE = 120.0F;
 
-    /** En dessous de cet ecart, on considere qu'on est aligne. */
-    private static final float DEADZONE_DEGREES = 0.4F;
+    /** En dessous de cet ecart, on ne touche plus a rien. */
+    private static final float DEADZONE_DEGREES = 0.05F;
+
+    /** Vitesse d'apprentissage du facteur de conversion (0 = fige, 1 = brutal). */
+    private static final double CALIBRATION_RATE = 0.15;
 
     private static KeyBinding toggleKey;
 
     // Etat du correcteur, remis a zero a chaque activation.
-    private static float lastYaw = 0.0F;
     private static long lastTimeNanos = 0L;
     private static boolean hasHistory = false;
+
+    // Auto-calibration : degres de pivotement obtenus par unite de delta souris.
+    private static double conversion = 0.0;
+    private static boolean conversionReady = false;
+    private static double lastInjectedDelta = 0.0;
+    private static float yawAtInjection = 0.0F;
 
     public static boolean isActive() {
         if (!locked) {
@@ -69,17 +74,30 @@ public class TropiLock implements ClientModInitializer {
         return MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
     }
 
+    /** Estimation theorique de depart, affinee ensuite par la mesure. */
+    private static double theoreticalConversion(MinecraftClient client) {
+        double sensitivity = client.options.getMouseSensitivity().getValue();
+        double base = sensitivity * 0.6 + 0.2;
+        return base * base * base * 8.0 * 0.15;
+    }
+
     private static void resetController() {
         hasHistory = false;
         lastTimeNanos = 0L;
-        lastYaw = 0.0F;
+        lastInjectedDelta = 0.0;
+        yawAtInjection = 0.0F;
+        conversionReady = false;
+        conversion = 0.0;
     }
 
     /**
-     * Correcteur proportionnel-derive.
-     * P pousse vers le cap, D freine quand la monture tourne deja vite.
-     * Tout est exprime en degres par seconde puis ramene au temps ecoule depuis
-     * la frame precedente, donc le comportement ne depend pas du framerate.
+     * Asservissement direct avec auto-calibration.
+     *
+     * A chaque frame on regarde de combien la monture a reellement pivote suite au
+     * delta injecte la frame precedente, ce qui donne le facteur de conversion reel
+     * degres/delta. On s'en sert pour injecter exactement le mouvement qui comble
+     * une fraction APPROACH de l'ecart restant. Aucun terme derive, donc rien qui
+     * puisse depasser la consigne et rebondir.
      */
     public static double computeSteeringDelta() {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -91,43 +109,58 @@ public class TropiLock implements ClientModInitializer {
         float yaw = player.getYaw();
         long now = System.nanoTime();
 
+        if (!conversionReady) {
+            conversion = theoreticalConversion(client);
+            conversionReady = conversion > 0.0;
+            if (!conversionReady) {
+                return 0.0;
+            }
+        }
+
         if (!hasHistory) {
-            lastYaw = yaw;
-            lastTimeNanos = now;
             hasHistory = true;
+            lastTimeNanos = now;
+            yawAtInjection = yaw;
+            lastInjectedDelta = 0.0;
             return 0.0;
         }
 
         float dt = (float) ((now - lastTimeNanos) / 1_000_000_000.0);
         dt = MathHelper.clamp(dt, 0.001F, 0.1F);
-
-        float yawRate = MathHelper.wrapDegrees(yaw - lastYaw) / dt;
-
-        lastYaw = yaw;
         lastTimeNanos = now;
+
+        // Mesure : le pivotement obtenu depuis la derniere injection.
+        if (Math.abs(lastInjectedDelta) > 0.5) {
+            double achieved = MathHelper.wrapDegrees(yaw - yawAtInjection);
+            double observed = achieved / lastInjectedDelta;
+
+            // On ne retient que les mesures plausibles : meme sens, ordre de grandeur sain.
+            if (observed > 0.0 && observed < conversion * 20.0) {
+                conversion = conversion * (1.0 - CALIBRATION_RATE) + observed * CALIBRATION_RATE;
+            }
+        }
 
         float error = MathHelper.wrapDegrees(currentBearing(player) - yaw);
 
-        if (Math.abs(error) < DEADZONE_DEGREES && Math.abs(yawRate) < 1.0F) {
+        if (Math.abs(error) < DEADZONE_DEGREES) {
+            yawAtInjection = yaw;
+            lastInjectedDelta = 0.0;
             return 0.0;
         }
 
-        float commandedRate = MathHelper.clamp(
-                GAIN_P * error - GAIN_D * yawRate,
-                -MAX_TURN_RATE,
-                MAX_TURN_RATE);
+        float maxStep = MAX_TURN_RATE * dt;
+        float step = MathHelper.clamp(error * APPROACH, -maxStep, maxStep);
 
-        float step = commandedRate * dt;
-
-        double sensitivity = client.options.getMouseSensitivity().getValue();
-        double base = sensitivity * 0.6 + 0.2;
-        double factor = base * base * base * 8.0;
-
-        if (factor <= 0.0) {
+        if (conversion <= 0.0001) {
             return 0.0;
         }
 
-        return step / (factor * 0.15);
+        double delta = step / conversion;
+
+        yawAtInjection = yaw;
+        lastInjectedDelta = delta;
+
+        return delta;
     }
 
     private static String toggleKeyName() {
