@@ -16,6 +16,12 @@ public abstract class MouseMixin {
 
     @Inject(method = "updateMouse", at = @At("HEAD"))
     private void tropilock$overrideYawDelta(CallbackInfo ci) {
+        if (TropiLock.isAligning()) {
+            // Souris du joueur bloquee ; seule l'impulsion d'alignement passe, une fois
+            this.cursorDeltaX = TropiLock.consumeAlignPulse();
+            return;
+        }
+
         if (!TropiLock.isActive()) {
             return;
         }

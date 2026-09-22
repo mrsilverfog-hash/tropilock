@@ -71,6 +71,35 @@ public class TropiLock implements ClientModInitializer {
     public enum Mode { FIXE, DIRECT, SOURIS }
     public static Mode mode = Mode.FIXE;
 
+    /*
+     * Alignement automatique, a l'arret.
+     *
+     * Le pilotage continu vacillait parce que la monture reagit avec retard.
+     * Ici on procede par impulsions : un seul mouvement de souris simule, puis
+     * on attend que la monture ait fini de tourner avant de mesurer et de
+     * corriger le reste. Jamais d'action pendant qu'elle bouge encore, donc
+     * rien qui puisse s'emballer. Une fois dans l'axe, le cap est fige.
+     */
+    private static boolean aligning = false;
+    private static double pendingPulse = 0.0;
+    private static double lastPulse = 0.0;
+    private static boolean pulseOutstanding = false;
+    private static float yawBeforePulse = 0.0F;
+    private static float lastAlignYaw = 0.0F;
+    private static int stableTicks = 0;
+    private static int alignTicks = 0;
+    private static double alignGain = 0.0;
+    private static double pulseBoost = 1.0;
+
+    /** Ticks sans mouvement pour considerer la monture immobile. */
+    private static final int SETTLE_TICKS = 4;
+    /** Rotation par tick en dessous de laquelle la monture est jugee immobile. */
+    private static final float SETTLE_EPS = 0.05F;
+    /** Abandon au bout de 10 s si l'alignement n'aboutit pas. */
+    private static final int ALIGN_TIMEOUT = 200;
+    /** Ecart prevu a l'arrivee juge suffisant, en blocs. */
+    private static final double ALIGN_MISS = 0.4;
+
     /** Guidage affiche dans la barre d'action tant qu'une cible est active. */
     private static boolean guiding = false;
     private static int hudTicks = 0;
@@ -314,7 +343,7 @@ public class TropiLock implements ClientModInitializer {
         String side = err > 0 ? "a droite" : "a gauche";
 
         Formatting color = miss < 1.0 ? Formatting.GREEN : (miss < 5.0 ? Formatting.YELLOW : Formatting.RED);
-        String prefix = locked ? "[Lock] " : "[Visee] ";
+        String prefix = aligning ? "[Alignement] " : (locked ? "[Lock] " : "[Visee] ");
 
         String msg = Math.abs(err) < 0.05F
                 ? String.format("%sPile dans l'axe | reste %.0f blocs", prefix, dist)
@@ -322,6 +351,117 @@ public class TropiLock implements ClientModInitializer {
                         prefix, Math.abs(err), side, miss, dist);
 
         player.sendMessage(Text.literal(msg).formatted(color), true);
+    }
+
+    public static boolean isAligning() {
+        if (!aligning) return false;
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client != null && client.player != null && client.currentScreen == null;
+    }
+
+    /** Lu une fois par le MouseMixin : l'impulsion n'est injectee qu'une seule fois. */
+    public static double consumeAlignPulse() {
+        double p = pendingPulse;
+        pendingPulse = 0.0;
+        return p;
+    }
+
+    /** Lance l'alignement ; a pied, la rotation est simplement ecrite. */
+    private static void startAlign(ClientPlayerEntity player) {
+        locked = false;
+        resetController();
+        if (!isMounted()) {
+            applyYaw(player, bearingToTarget(player));
+            activate(player);
+            player.sendMessage(Text.literal("[TropiLock] Aligne, cap fige.")
+                    .formatted(Formatting.GREEN), false);
+            return;
+        }
+        aligning = true;
+        pendingPulse = 0.0;
+        lastPulse = 0.0;
+        pulseOutstanding = false;
+        stableTicks = 0;
+        alignTicks = 0;
+        alignGain = theoreticalConversion(MinecraftClient.getInstance());
+        pulseBoost = 1.0;
+        lastAlignYaw = player.getRootVehicle().getYaw();
+    }
+
+    private static void stopAlign() {
+        aligning = false;
+        pendingPulse = 0.0;
+        pulseOutstanding = false;
+    }
+
+    private static void tickAlign(ClientPlayerEntity player) {
+        Entity vehicle = player.getRootVehicle();
+        float yaw = vehicle.getYaw();
+
+        if (Math.abs(MathHelper.wrapDegrees(yaw - lastAlignYaw)) < SETTLE_EPS) {
+            stableTicks++;
+        } else {
+            stableTicks = 0;
+        }
+        lastAlignYaw = yaw;
+
+        if (++alignTicks > ALIGN_TIMEOUT) {
+            stopAlign();
+            activate(player);
+            player.sendMessage(Text.literal(
+                    "[TropiLock] Alignement incomplet, cap fige tel quel : ajuste a la main si besoin.")
+                    .formatted(Formatting.GOLD), false);
+            return;
+        }
+
+        // On attend que la monture ait fini de tourner avant toute mesure
+        if (stableTicks < SETTLE_TICKS || pendingPulse != 0.0) {
+            return;
+        }
+
+        // Mesure de l'effet reel de la derniere impulsion
+        if (pulseOutstanding) {
+            pulseOutstanding = false;
+            double achieved = MathHelper.wrapDegrees(yaw - yawBeforePulse);
+            if (Math.abs(achieved) < 0.01) {
+                // Impulsion trop faible pour faire bouger la monture : on insiste
+                pulseBoost = Math.min(pulseBoost * 2.0, 16.0);
+            } else {
+                pulseBoost = 1.0;
+                double g = achieved / lastPulse;
+                double theory = theoreticalConversion(MinecraftClient.getInstance());
+                if (g > theory * 0.1 && g < theory * 10.0) {
+                    alignGain = g;
+                }
+            }
+        }
+
+        double dx = targetX - player.getX();
+        double dz = targetZ - player.getZ();
+        double dist = Math.sqrt(dx * dx + dz * dz);
+        float err = MathHelper.wrapDegrees(bearingToTarget(player) - yaw);
+        double miss = Math.abs(dist * Math.sin(Math.toRadians(err)));
+
+        if (miss < ALIGN_MISS || Math.abs(err) < 0.01F) {
+            stopAlign();
+            activate(player);
+            player.sendMessage(Text.literal(String.format(
+                    "[TropiLock] Aligne (ecart prevu %.1f bloc), cap fige.", miss))
+                    .formatted(Formatting.GREEN), false);
+            return;
+        }
+
+        if (alignGain <= 1.0E-6) {
+            alignGain = theoreticalConversion(MinecraftClient.getInstance());
+        }
+
+        // 80 % de l'ecart par impulsion : on approche sans depasser
+        double pulse = (err * 0.8 / alignGain) * pulseBoost;
+        yawBeforePulse = yaw;
+        lastPulse = pulse;
+        pendingPulse = pulse;
+        pulseOutstanding = true;
+        stableTicks = 0;
     }
 
     /** Vrai si le pilotage passe par la simulation de souris. */
@@ -391,6 +531,7 @@ public class TropiLock implements ClientModInitializer {
                                 locked = false;
                                 arrivalBrake = false;
                                 guiding = false;
+                                stopAlign();
                                 resetController();
                                 ctx.getSource().sendFeedback(
                                         Text.literal("[TropiLock] Verrouillage desactive.")
@@ -430,12 +571,15 @@ public class TropiLock implements ClientModInitializer {
                                         targetZ = DoubleArgumentType.getDouble(ctx, "z");
                                         hasTarget = true;
                                         guiding = true;
-                                        activate(ctx.getSource().getPlayer());
+                                        ClientPlayerEntity p = ctx.getSource().getPlayer();
+                                        double ddx = targetX - p.getX();
+                                        double ddz = targetZ - p.getZ();
                                         ctx.getSource().sendFeedback(
                                                 Text.literal(String.format(
-                                                        "[TropiLock] Cap verrouille sur %.0f / %.0f, %.0f blocs (%s pour liberer).",
-                                                        targetX, targetZ, lineLength, toggleKeyName()))
+                                                        "[TropiLock] Cible %.0f / %.0f, %.0f blocs : alignement... (%s pour annuler).",
+                                                        targetX, targetZ, Math.sqrt(ddx * ddx + ddz * ddz), toggleKeyName()))
                                                         .formatted(Formatting.GREEN));
+                                        startAlign(p);
                                         return 1;
                                     }))));
         });
@@ -466,18 +610,31 @@ public class TropiLock implements ClientModInitializer {
                                         .formatted(Formatting.RED), false);
                     }
                 } else if (client.player != null) {
-                    if (locked) {
+                    if (aligning) {
+                        // Annulation : on rend la main, visee manuelle
+                        stopAlign();
+                        client.player.sendMessage(Text.literal(
+                                "[TropiLock] Alignement annule, visee manuelle.")
+                                .formatted(Formatting.YELLOW), false);
+                    } else if (locked) {
                         locked = false;
                         resetController();
+                        client.player.sendMessage(Text.literal(
+                                "[TropiLock] Verrouillage desactive, visee manuelle.")
+                                .formatted(Formatting.YELLOW), false);
                     } else {
-                        // Nouvelle ligne depuis la position actuelle
-                        activate(client.player);
+                        guiding = true;
+                        client.player.sendMessage(Text.literal(
+                                "[TropiLock] Alignement...")
+                                .formatted(Formatting.GREEN), false);
+                        startAlign(client.player);
                     }
-                    client.player.sendMessage(
-                            Text.literal(locked
-                                    ? "[TropiLock] Verrouillage actif."
-                                    : "[TropiLock] Verrouillage desactive.")
-                                    .formatted(locked ? Formatting.GREEN : Formatting.YELLOW), false);
+                }
+            }
+
+            if (aligning && client.player != null) {
+                if (client.currentScreen == null) {
+                    tickAlign(client.player);
                 }
             }
 
