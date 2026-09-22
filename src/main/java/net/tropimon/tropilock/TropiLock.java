@@ -55,8 +55,33 @@ public class TropiLock implements ClientModInitializer {
     private static int brakeTicks = 0;
     private static final int BRAKE_MAX_TICKS = 100; // 5 s de securite
 
-    /** Fraction de l'ecart comblee par frame. Sous 1.0 : approche sans depassement. */
-    private static final float APPROACH = 0.5F;
+    /*
+     * Deux facons de piloter une monture.
+     *
+     * DIRECT : on ecrit l'orientation de la monture et du joueur a chaque tick,
+     * comme a pied. Pas de dynamique inconnue, donc pas d'oscillation.
+     * SOURIS : on simule des mouvements de souris (ancienne methode), utilisee
+     * en repli si la monture n'accepte pas l'orientation imposee.
+     */
+    public enum Mode { DIRECT, SOURIS }
+    public static Mode mode = Mode.DIRECT;
+
+    /** Rotation maximale par tick en mode direct (4 deg/tick = 80 deg/s). */
+    private static final float DIRECT_MAX_STEP = 4.0F;
+    /** Fraction de l'ecart comblee par tick en mode direct. */
+    private static final float DIRECT_APPROACH = 0.35F;
+
+    // Verification que la monture garde le cap impose (sinon repli sur SOURIS).
+    private static float lastSetYaw = 0.0F;
+    private static boolean hasSetYaw = false;
+    private static int checkTicks = 0;
+    private static int overrideTicks = 0;
+    private static final int CHECK_WINDOW = 40;
+    private static final int OVERRIDE_LIMIT = 15;
+    private static final float OVERRIDE_TOLERANCE = 3.0F;
+
+    /** Fraction de l'ecart comblee par frame en mode souris. Reduite pour limiter l'oscillation. */
+    private static final float APPROACH = 0.25F;
 
     /** Vitesse de rotation maximale autorisee, en degres par seconde. */
     private static final float MAX_TURN_RATE = 120.0F;
@@ -167,8 +192,9 @@ public class TropiLock implements ClientModInitializer {
         float yaw = player.getYaw();
         long now = System.nanoTime();
 
+        double theory = theoreticalConversion(client);
         if (!conversionReady) {
-            conversion = theoreticalConversion(client);
+            conversion = theory;
             conversionReady = conversion > 0.0;
             if (!conversionReady) {
                 return 0.0;
@@ -196,6 +222,9 @@ public class TropiLock implements ClientModInitializer {
             if (observed > 0.0 && observed < conversion * 20.0) {
                 conversion = conversion * (1.0 - CALIBRATION_RATE) + observed * CALIBRATION_RATE;
             }
+            // Borne : une monture qui continue de tourner apres le mouvement
+            // gonflait la mesure, et les corrections finissaient quasi nulles.
+            conversion = MathHelper.clamp(conversion, theory * 0.5, theory * 2.0);
         }
 
         float error = MathHelper.wrapDegrees(currentBearing(player) - yaw);
@@ -235,6 +264,50 @@ public class TropiLock implements ClientModInitializer {
         locked = true;
         arrivalBrake = false;
         resetController();
+        hasSetYaw = false;
+        checkTicks = 0;
+        overrideTicks = 0;
+    }
+
+    /** Vrai si le pilotage passe par la simulation de souris. */
+    public static boolean usesMouseSteering() {
+        return mode == Mode.SOURIS;
+    }
+
+    /**
+     * Mode direct, appele en debut de tick (avant le deplacement) : fait
+     * pivoter progressivement monture et joueur vers le cap de la ligne.
+     */
+    private static void steerDirect(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        Entity vehicle = player.getRootVehicle();
+
+        float current = vehicle.getYaw();
+
+        // Controle : entre deux ticks, personne d'autre ne doit avoir tourne la monture
+        if (hasSetYaw && checkTicks < CHECK_WINDOW) {
+            checkTicks++;
+            if (Math.abs(MathHelper.wrapDegrees(current - lastSetYaw)) > OVERRIDE_TOLERANCE) {
+                overrideTicks++;
+            }
+            if (overrideTicks > OVERRIDE_LIMIT) {
+                mode = Mode.SOURIS;
+                resetController();
+                player.sendMessage(Text.literal(
+                        "[TropiLock] La monture refuse le cap impose : passage en mode souris.")
+                        .formatted(Formatting.GOLD), false);
+                return;
+            }
+        }
+
+        float error = MathHelper.wrapDegrees(currentBearing(player) - current);
+        float step = MathHelper.clamp(error * DIRECT_APPROACH, -DIRECT_MAX_STEP, DIRECT_MAX_STEP);
+        float yaw = current + step;
+
+        applyYawSmooth(vehicle, yaw);
+        applyYawSmooth(player, yaw);
+        lastSetYaw = yaw;
+        hasSetYaw = true;
     }
 
     private static String toggleKeyName() {
@@ -268,6 +341,24 @@ public class TropiLock implements ClientModInitializer {
                                                 .formatted(Formatting.YELLOW));
                                 return 1;
                             }))
+                    .then(ClientCommandManager.literal("mode")
+                            .then(ClientCommandManager.literal("direct").executes(ctx -> {
+                                mode = Mode.DIRECT;
+                                resetController();
+                                hasSetYaw = false; checkTicks = 0; overrideTicks = 0;
+                                ctx.getSource().sendFeedback(Text.literal(
+                                        "[TropiLock] Mode direct : orientation imposee a la monture.")
+                                        .formatted(Formatting.GREEN));
+                                return 1;
+                            }))
+                            .then(ClientCommandManager.literal("souris").executes(ctx -> {
+                                mode = Mode.SOURIS;
+                                resetController();
+                                ctx.getSource().sendFeedback(Text.literal(
+                                        "[TropiLock] Mode souris : pilotage par mouvements simules.")
+                                        .formatted(Formatting.GREEN));
+                                return 1;
+                            })))
                     .then(ClientCommandManager.argument("x", DoubleArgumentType.doubleArg())
                             .then(ClientCommandManager.argument("z", DoubleArgumentType.doubleArg())
                                     .executes(ctx -> {
@@ -282,6 +373,15 @@ public class TropiLock implements ClientModInitializer {
                                                         .formatted(Formatting.GREEN));
                                         return 1;
                                     }))));
+        });
+
+        ClientTickEvents.START_CLIENT_TICK.register(client -> {
+            if (!locked || client.player == null || client.currentScreen != null) {
+                return;
+            }
+            if (mode == Mode.DIRECT && isMounted()) {
+                steerDirect(client);
+            }
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -343,6 +443,19 @@ public class TropiLock implements ClientModInitializer {
                 applyYaw(player, currentBearing(player));
             }
         });
+    }
+
+    /** Comme applyYaw, mais garde l'ancienne valeur en prev pour une rotation fluide. */
+    private static void applyYawSmooth(Entity entity, float yaw) {
+        float old = entity.getYaw();
+        entity.setYaw(yaw);
+        entity.prevYaw = old;
+        entity.setHeadYaw(yaw);
+        if (entity instanceof LivingEntity living) {
+            living.prevHeadYaw = old;
+            living.bodyYaw = yaw;
+            living.prevBodyYaw = old;
+        }
     }
 
     private static void applyYaw(Entity entity, float yaw) {

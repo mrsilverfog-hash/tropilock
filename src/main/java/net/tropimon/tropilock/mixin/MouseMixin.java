@@ -20,9 +20,12 @@ public abstract class MouseMixin {
             return;
         }
 
-        if (TropiLock.isMounted()) {
-            // On pilote la monture en injectant le mouvement de souris voulu.
+        if (TropiLock.isMounted() && TropiLock.usesMouseSteering()) {
+            // Mode souris : on pilote la monture en injectant le mouvement voulu.
             this.cursorDeltaX = TropiLock.computeSteeringDelta();
+        } else if (TropiLock.isMounted()) {
+            // Mode direct : l'orientation est ecrite a chaque tick, la souris est coupee.
+            this.cursorDeltaX = 0.0;
         } else {
             // A pied, le yaw est ecrit directement : on coupe juste la souris.
             this.cursorDeltaX = 0.0;
