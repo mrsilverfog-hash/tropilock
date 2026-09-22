@@ -92,7 +92,7 @@ public class TropiLock implements ClientModInitializer {
     private static double pulseBoost = 1.0;
 
     /** Ticks sans mouvement pour considerer la monture immobile. */
-    private static final int SETTLE_TICKS = 6;
+    private static final int SETTLE_TICKS = 5;
     /** Rotation par tick en dessous de laquelle la monture est jugee immobile. */
     private static final float SETTLE_EPS = 0.005F;
     /** Abandon au bout de 20 s si l'alignement n'aboutit pas. */
@@ -100,7 +100,7 @@ public class TropiLock implements ClientModInitializer {
     /** Ecart prevu a l'arrivee juge suffisant, en blocs. */
     private static final double ALIGN_MISS = 0.02;
     /** Mesures consecutives sous le seuil exigees avant de figer le cap. */
-    private static final int ALIGN_CONFIRMATIONS = 3;
+    private static final int ALIGN_CONFIRMATIONS = 2;
     private static int confirmCount = 0;
 
     /**
