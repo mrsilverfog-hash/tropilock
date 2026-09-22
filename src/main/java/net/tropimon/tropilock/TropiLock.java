@@ -679,7 +679,8 @@ public class TropiLock implements ClientModInitializer {
                 }
             }
 
-            if (guiding && client.player != null && !arrivalBrake) {
+            // Indicateur affiche seulement quand le lock travaille : en pause, il disparait
+            if (guiding && client.player != null && !arrivalBrake && (locked || aligning)) {
                 if (++hudTicks >= 2) {
                     hudTicks = 0;
                     showGuidance(client.player);
