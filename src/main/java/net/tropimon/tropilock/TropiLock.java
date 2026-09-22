@@ -651,19 +651,15 @@ public class TropiLock implements ClientModInitializer {
                 if (aligning) {
                     // Annulation de l'alignement en cours
                     stopAlign();
-                    client.player.sendMessage(Text.literal(
-                            "[TropiLock] Alignement annule.")
-                            .formatted(Formatting.YELLOW), true);
+                    // Desactivation silencieuse : on vide la barre d'action
+                    client.player.sendMessage(Text.empty(), true);
                 } else if (locked) {
                     // Arret : plus de cap fige, plus d'avance
-                    boolean wasFree = freeLock;
                     locked = false;
                     freeLock = false;
                     resetController();
-                    client.player.sendMessage(Text.literal(wasFree
-                            ? "[TropiLock] Arret."
-                            : "[TropiLock] Trajet en pause.")
-                            .formatted(Formatting.YELLOW), true);
+                    // Desactivation silencieuse : on vide la barre d'action
+                    client.player.sendMessage(Text.empty(), true);
                 } else if (guiding && hasTarget) {
                     // Trajet vers une cible en cours : on reprend, alignement compris
                     startAlign(client.player);
