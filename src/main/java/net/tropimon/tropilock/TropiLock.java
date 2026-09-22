@@ -94,11 +94,11 @@ public class TropiLock implements ClientModInitializer {
     /** Ticks sans mouvement pour considerer la monture immobile. */
     private static final int SETTLE_TICKS = 4;
     /** Rotation par tick en dessous de laquelle la monture est jugee immobile. */
-    private static final float SETTLE_EPS = 0.05F;
-    /** Abandon au bout de 10 s si l'alignement n'aboutit pas. */
-    private static final int ALIGN_TIMEOUT = 200;
+    private static final float SETTLE_EPS = 0.005F;
+    /** Abandon au bout de 15 s si l'alignement n'aboutit pas. */
+    private static final int ALIGN_TIMEOUT = 300;
     /** Ecart prevu a l'arrivee juge suffisant, en blocs. */
-    private static final double ALIGN_MISS = 0.4;
+    private static final double ALIGN_MISS = 0.1;
 
     /** Guidage affiche dans la barre d'action tant qu'une cible est active. */
     private static boolean guiding = false;
@@ -342,12 +342,12 @@ public class TropiLock implements ClientModInitializer {
         double miss = Math.abs(dist * Math.sin(Math.toRadians(err)));
         String side = err > 0 ? "a droite" : "a gauche";
 
-        Formatting color = miss < 1.0 ? Formatting.GREEN : (miss < 5.0 ? Formatting.YELLOW : Formatting.RED);
+        Formatting color = miss < 0.5 ? Formatting.GREEN : (miss < 3.0 ? Formatting.YELLOW : Formatting.RED);
         String prefix = aligning ? "[Alignement] " : (locked ? "[Lock] " : "[Visee] ");
 
-        String msg = Math.abs(err) < 0.05F
+        String msg = miss < 0.05
                 ? String.format("%sPile dans l'axe | reste %.0f blocs", prefix, dist)
-                : String.format("%sCible %.2f° %s | ecart prevu %.1f blocs | reste %.0f blocs",
+                : String.format("%sCible %.3f° %s | ecart prevu %.2f blocs | reste %.0f blocs",
                         prefix, Math.abs(err), side, miss, dist);
 
         player.sendMessage(Text.literal(msg).formatted(color), true);
@@ -423,14 +423,14 @@ public class TropiLock implements ClientModInitializer {
         if (pulseOutstanding) {
             pulseOutstanding = false;
             double achieved = MathHelper.wrapDegrees(yaw - yawBeforePulse);
-            if (Math.abs(achieved) < 0.01) {
+            if (Math.abs(achieved) < 0.0005) {
                 // Impulsion trop faible pour faire bouger la monture : on insiste
                 pulseBoost = Math.min(pulseBoost * 2.0, 16.0);
             } else {
                 pulseBoost = 1.0;
                 double g = achieved / lastPulse;
                 double theory = theoreticalConversion(MinecraftClient.getInstance());
-                if (g > theory * 0.1 && g < theory * 10.0) {
+                if (Math.abs(achieved) > 0.005 && g > theory * 0.1 && g < theory * 10.0) {
                     alignGain = g;
                 }
             }
@@ -442,11 +442,11 @@ public class TropiLock implements ClientModInitializer {
         float err = MathHelper.wrapDegrees(bearingToTarget(player) - yaw);
         double miss = Math.abs(dist * Math.sin(Math.toRadians(err)));
 
-        if (miss < ALIGN_MISS || Math.abs(err) < 0.01F) {
+        if (miss < ALIGN_MISS || Math.abs(err) < 0.0002F) {
             stopAlign();
             activate(player);
             player.sendMessage(Text.literal(String.format(
-                    "[TropiLock] Aligne (ecart prevu %.1f bloc), cap fige.", miss))
+                    "[TropiLock] Aligne (ecart prevu %.2f bloc), cap fige.", miss))
                     .formatted(Formatting.GREEN), false);
             return;
         }
@@ -456,7 +456,8 @@ public class TropiLock implements ClientModInitializer {
         }
 
         // 80 % de l'ecart par impulsion : on approche sans depasser
-        double pulse = (err * 0.8 / alignGain) * pulseBoost;
+        double factor = miss < 1.0 ? 1.0 : 0.8;
+        double pulse = (err * factor / alignGain) * pulseBoost;
         yawBeforePulse = yaw;
         lastPulse = pulse;
         pendingPulse = pulse;
