@@ -63,8 +63,17 @@ public class TropiLock implements ClientModInitializer {
      * SOURIS : on simule des mouvements de souris (ancienne methode), utilisee
      * en repli si la monture n'accepte pas l'orientation imposee.
      */
-    public enum Mode { DIRECT, SOURIS }
-    public static Mode mode = Mode.DIRECT;
+    /*
+     * FIXE (defaut) : le cap est simplement fige, souris horizontale bloquee,
+     * aucun pilotage. C'est Cobblemon qui garde la monture droite, sans que
+     * rien ne vienne se battre avec sa propre rotation.
+     */
+    public enum Mode { FIXE, DIRECT, SOURIS }
+    public static Mode mode = Mode.FIXE;
+
+    /** Guidage affiche dans la barre d'action tant qu'une cible est active. */
+    private static boolean guiding = false;
+    private static int hudTicks = 0;
 
     /** Rotation maximale par tick en mode direct (4 deg/tick = 80 deg/s). */
     private static final float DIRECT_MAX_STEP = 4.0F;
@@ -269,6 +278,52 @@ public class TropiLock implements ClientModInitializer {
         overrideTicks = 0;
     }
 
+    /**
+     * Direction reellement suivie : celle de la vitesse quand on avance, sinon
+     * l'orientation de la monture. C'est elle qui determine ou l'on arrive.
+     */
+    private static float travelHeading(ClientPlayerEntity player) {
+        Entity v = player.getRootVehicle();
+        net.minecraft.util.math.Vec3d vel = v.getVelocity();
+        double h = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+        if (h > 0.08) {
+            return MathHelper.wrapDegrees((float) (MathHelper.atan2(vel.z, vel.x) * 57.2957795) - 90.0F);
+        }
+        return MathHelper.wrapDegrees(v.getYaw());
+    }
+
+    /** Cap exact vers la cible (pas vers un point de la ligne). */
+    private static float bearingToTarget(ClientPlayerEntity player) {
+        double dx = targetX - player.getX();
+        double dz = targetZ - player.getZ();
+        return MathHelper.wrapDegrees((float) (MathHelper.atan2(dz, dx) * 57.2957795) - 90.0F);
+    }
+
+    /**
+     * Barre d'action : decalage angulaire vers la cible et ecart prevu a
+     * l'arrivee si le cap actuel est conserve. Sert a s'aligner avant de
+     * verrouiller, puis a verifier qu'on reste bon pendant le vol.
+     */
+    private static void showGuidance(ClientPlayerEntity player) {
+        double dx = targetX - player.getX();
+        double dz = targetZ - player.getZ();
+        double dist = Math.sqrt(dx * dx + dz * dz);
+
+        float err = MathHelper.wrapDegrees(bearingToTarget(player) - travelHeading(player));
+        double miss = Math.abs(dist * Math.sin(Math.toRadians(err)));
+        String side = err > 0 ? "a droite" : "a gauche";
+
+        Formatting color = miss < 1.0 ? Formatting.GREEN : (miss < 5.0 ? Formatting.YELLOW : Formatting.RED);
+        String prefix = locked ? "[Lock] " : "[Visee] ";
+
+        String msg = Math.abs(err) < 0.05F
+                ? String.format("%sPile dans l'axe | reste %.0f blocs", prefix, dist)
+                : String.format("%sCible %.2f° %s | ecart prevu %.1f blocs | reste %.0f blocs",
+                        prefix, Math.abs(err), side, miss, dist);
+
+        player.sendMessage(Text.literal(msg).formatted(color), true);
+    }
+
     /** Vrai si le pilotage passe par la simulation de souris. */
     public static boolean usesMouseSteering() {
         return mode == Mode.SOURIS;
@@ -335,6 +390,7 @@ public class TropiLock implements ClientModInitializer {
                             .executes(ctx -> {
                                 locked = false;
                                 arrivalBrake = false;
+                                guiding = false;
                                 resetController();
                                 ctx.getSource().sendFeedback(
                                         Text.literal("[TropiLock] Verrouillage desactive.")
@@ -342,6 +398,14 @@ public class TropiLock implements ClientModInitializer {
                                 return 1;
                             }))
                     .then(ClientCommandManager.literal("mode")
+                            .then(ClientCommandManager.literal("fixe").executes(ctx -> {
+                                mode = Mode.FIXE;
+                                resetController();
+                                ctx.getSource().sendFeedback(Text.literal(
+                                        "[TropiLock] Mode fixe : cap fige, aucun pilotage.")
+                                        .formatted(Formatting.GREEN));
+                                return 1;
+                            }))
                             .then(ClientCommandManager.literal("direct").executes(ctx -> {
                                 mode = Mode.DIRECT;
                                 resetController();
@@ -365,6 +429,7 @@ public class TropiLock implements ClientModInitializer {
                                         targetX = DoubleArgumentType.getDouble(ctx, "x");
                                         targetZ = DoubleArgumentType.getDouble(ctx, "z");
                                         hasTarget = true;
+                                        guiding = true;
                                         activate(ctx.getSource().getPlayer());
                                         ctx.getSource().sendFeedback(
                                                 Text.literal(String.format(
@@ -416,6 +481,13 @@ public class TropiLock implements ClientModInitializer {
                 }
             }
 
+            if (guiding && client.player != null && !arrivalBrake) {
+                if (++hudTicks >= 2) {
+                    hudTicks = 0;
+                    showGuidance(client.player);
+                }
+            }
+
             if (!locked || client.player == null) {
                 return;
             }
@@ -428,6 +500,7 @@ public class TropiLock implements ClientModInitializer {
                 resetController();
                 arrivalBrake = true;
                 brakeTicks = 0;
+                guiding = false;
 
                 double ex = player.getX() - targetX;
                 double ez = player.getZ() - targetZ;
@@ -439,7 +512,7 @@ public class TropiLock implements ClientModInitializer {
                 return;
             }
 
-            if (!isMounted()) {
+            if (!isMounted() && mode != Mode.FIXE) {
                 applyYaw(player, currentBearing(player));
             }
         });
