@@ -107,6 +107,12 @@ public class TropiLock implements ClientModInitializer {
      */
     public static boolean autoForward = true;
 
+    /**
+     * Lock libre : cap fige dans la direction actuelle, sans cible ni ligne ni
+     * arrivee. C'est ce que fait la touche quand aucun trajet n'est en cours.
+     */
+    private static boolean freeLock = false;
+
     public static boolean isAutoAdvancing() {
         if (!autoForward || !locked || aligning) return false;
         MinecraftClient client = MinecraftClient.getInstance();
@@ -312,6 +318,7 @@ public class TropiLock implements ClientModInitializer {
 
     private static void activate(ClientPlayerEntity player) {
         setupLine(player);
+        freeLock = false;
         locked = true;
         arrivalBrake = false;
         resetController();
@@ -377,6 +384,18 @@ public class TropiLock implements ClientModInitializer {
         double p = pendingPulse;
         pendingPulse = 0.0;
         return p;
+    }
+
+    private static void startFree(ClientPlayerEntity player) {
+        stopAlign();
+        resetController();
+        arrivalBrake = false;
+        freeLock = true;
+        locked = true;
+        player.sendMessage(Text.literal(String.format(autoForward
+                        ? "[TropiLock] Cap fige, avance tout droit (%s pour arreter)."
+                        : "[TropiLock] Cap fige (%s pour liberer).", toggleKeyName()))
+                .formatted(Formatting.GREEN), true);
     }
 
     /** Lance l'alignement ; a pied, la rotation est simplement ecrite. */
@@ -480,7 +499,7 @@ public class TropiLock implements ClientModInitializer {
 
     /** Vrai si le pilotage passe par la simulation de souris. */
     public static boolean usesMouseSteering() {
-        return mode == Mode.SOURIS;
+        return mode == Mode.SOURIS && !freeLock;
     }
 
     /**
@@ -543,6 +562,7 @@ public class TropiLock implements ClientModInitializer {
                     .then(ClientCommandManager.literal("off")
                             .executes(ctx -> {
                                 locked = false;
+                                freeLock = false;
                                 arrivalBrake = false;
                                 guiding = false;
                                 stopAlign();
@@ -610,7 +630,7 @@ public class TropiLock implements ClientModInitializer {
             if (!locked || client.player == null || client.currentScreen != null) {
                 return;
             }
-            if (mode == Mode.DIRECT && isMounted()) {
+            if (mode == Mode.DIRECT && isMounted() && !freeLock) {
                 steerDirect(client);
             }
         });
@@ -625,32 +645,31 @@ public class TropiLock implements ClientModInitializer {
             }
 
             while (toggleKey.wasPressed()) {
-                if (!hasTarget) {
-                    if (client.player != null) {
-                        client.player.sendMessage(
-                                Text.literal("[TropiLock] Aucune cible : utilise /lock <x> <z>.")
-                                        .formatted(Formatting.RED), false);
-                    }
-                } else if (client.player != null) {
-                    if (aligning) {
-                        // Annulation : on rend la main, visee manuelle
-                        stopAlign();
-                        client.player.sendMessage(Text.literal(
-                                "[TropiLock] Alignement annule, visee manuelle.")
-                                .formatted(Formatting.YELLOW), false);
-                    } else if (locked) {
-                        locked = false;
-                        resetController();
-                        client.player.sendMessage(Text.literal(
-                                "[TropiLock] Verrouillage desactive, visee manuelle.")
-                                .formatted(Formatting.YELLOW), false);
-                    } else {
-                        guiding = true;
-                        client.player.sendMessage(Text.literal(
-                                "[TropiLock] Alignement...")
-                                .formatted(Formatting.GREEN), false);
-                        startAlign(client.player);
-                    }
+                if (client.player == null) {
+                    continue;
+                }
+                if (aligning) {
+                    // Annulation de l'alignement en cours
+                    stopAlign();
+                    client.player.sendMessage(Text.literal(
+                            "[TropiLock] Alignement annule.")
+                            .formatted(Formatting.YELLOW), true);
+                } else if (locked) {
+                    // Arret : plus de cap fige, plus d'avance
+                    boolean wasFree = freeLock;
+                    locked = false;
+                    freeLock = false;
+                    resetController();
+                    client.player.sendMessage(Text.literal(wasFree
+                            ? "[TropiLock] Arret."
+                            : "[TropiLock] Trajet en pause.")
+                            .formatted(Formatting.YELLOW), true);
+                } else if (guiding && hasTarget) {
+                    // Trajet vers une cible en cours : on reprend, alignement compris
+                    startAlign(client.player);
+                } else {
+                    // Aucun trajet : tout droit dans la direction actuelle
+                    startFree(client.player);
                 }
             }
 
@@ -668,6 +687,10 @@ public class TropiLock implements ClientModInitializer {
             }
 
             if (!locked || client.player == null) {
+                return;
+            }
+
+            if (freeLock) {
                 return;
             }
 
