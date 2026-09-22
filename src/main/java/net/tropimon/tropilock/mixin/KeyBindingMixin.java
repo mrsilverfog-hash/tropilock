@@ -24,6 +24,12 @@ public abstract class KeyBindingMixin {
 
         Object self = this;
 
+        // Avance automatique pendant que le cap est fige
+        if (self == client.options.forwardKey && TropiLock.isAutoAdvancing()) {
+            cir.setReturnValue(true);
+            return;
+        }
+
         // Arrivee : l'avance est coupee pour que la monture s'arrete sur la cible
         if (TropiLock.arrivalBrake && self == client.options.forwardKey) {
             cir.setReturnValue(false);

@@ -100,6 +100,19 @@ public class TropiLock implements ClientModInitializer {
     /** Ecart prevu a l'arrivee juge suffisant, en blocs. */
     private static final double ALIGN_MISS = 0.1;
 
+    /**
+     * Avance automatique : tant que le cap est fige, la touche d'avance est
+     * consideree comme enfoncee. Coupee a l'arrivee, au deverrouillage, et
+     * jamais pendant l'alignement (la monture doit rester immobile).
+     */
+    public static boolean autoForward = true;
+
+    public static boolean isAutoAdvancing() {
+        if (!autoForward || !locked || aligning) return false;
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client != null && client.player != null;
+    }
+
     /** Guidage affiche dans la barre d'action tant qu'une cible est active. */
     private static boolean guiding = false;
     private static int hudTicks = 0;
@@ -539,6 +552,14 @@ public class TropiLock implements ClientModInitializer {
                                                 .formatted(Formatting.YELLOW));
                                 return 1;
                             }))
+                    .then(ClientCommandManager.literal("avance").executes(ctx -> {
+                                autoForward = !autoForward;
+                                ctx.getSource().sendFeedback(Text.literal(autoForward
+                                        ? "[TropiLock] Avance automatique activee."
+                                        : "[TropiLock] Avance automatique desactivee.")
+                                        .formatted(autoForward ? Formatting.GREEN : Formatting.YELLOW));
+                                return 1;
+                            }))
                     .then(ClientCommandManager.literal("mode")
                             .then(ClientCommandManager.literal("fixe").executes(ctx -> {
                                 mode = Mode.FIXE;
@@ -663,8 +684,9 @@ public class TropiLock implements ClientModInitializer {
                 double ex = player.getX() - targetX;
                 double ez = player.getZ() - targetZ;
                 player.sendMessage(
-                        Text.literal(String.format(
-                                "[TropiLock] Arrive en %.1f / %.1f (ecart %.1f bloc). Relache l'avance pour reprendre la main.",
+                        Text.literal(String.format(autoForward
+                                        ? "[TropiLock] Arrive en %.1f / %.1f (ecart %.1f bloc)."
+                                        : "[TropiLock] Arrive en %.1f / %.1f (ecart %.1f bloc). Relache l'avance pour reprendre la main.",
                                 player.getX(), player.getZ(), Math.sqrt(ex * ex + ez * ez)))
                                 .formatted(Formatting.GREEN), false);
                 return;
