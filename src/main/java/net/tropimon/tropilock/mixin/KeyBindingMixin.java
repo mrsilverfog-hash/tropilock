@@ -12,8 +12,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class KeyBindingMixin {
 
     @Inject(method = "isPressed", at = @At("HEAD"), cancellable = true)
-    private void tropilock$blockStrafe(CallbackInfoReturnable<Boolean> cir) {
-        if (!TropiLock.locked) {
+    private void tropilock$blockKeys(CallbackInfoReturnable<Boolean> cir) {
+        if (!TropiLock.locked && !TropiLock.arrivalBrake) {
             return;
         }
 
@@ -23,7 +23,15 @@ public abstract class KeyBindingMixin {
         }
 
         Object self = this;
-        if (self == client.options.leftKey || self == client.options.rightKey) {
+
+        // Arrivee : l'avance est coupee pour que la monture s'arrete sur la cible
+        if (TropiLock.arrivalBrake && self == client.options.forwardKey) {
+            cir.setReturnValue(false);
+            return;
+        }
+
+        // Verrouillage : pas de deplacement lateral
+        if (TropiLock.locked && (self == client.options.leftKey || self == client.options.rightKey)) {
             cir.setReturnValue(false);
         }
     }
