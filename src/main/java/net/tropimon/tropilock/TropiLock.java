@@ -92,13 +92,16 @@ public class TropiLock implements ClientModInitializer {
     private static double pulseBoost = 1.0;
 
     /** Ticks sans mouvement pour considerer la monture immobile. */
-    private static final int SETTLE_TICKS = 4;
+    private static final int SETTLE_TICKS = 6;
     /** Rotation par tick en dessous de laquelle la monture est jugee immobile. */
     private static final float SETTLE_EPS = 0.005F;
-    /** Abandon au bout de 15 s si l'alignement n'aboutit pas. */
-    private static final int ALIGN_TIMEOUT = 300;
+    /** Abandon au bout de 20 s si l'alignement n'aboutit pas. */
+    private static final int ALIGN_TIMEOUT = 400;
     /** Ecart prevu a l'arrivee juge suffisant, en blocs. */
-    private static final double ALIGN_MISS = 0.1;
+    private static final double ALIGN_MISS = 0.02;
+    /** Mesures consecutives sous le seuil exigees avant de figer le cap. */
+    private static final int ALIGN_CONFIRMATIONS = 3;
+    private static int confirmCount = 0;
 
     /**
      * Avance automatique : tant que le cap est fige, la touche d'avance est
@@ -417,6 +420,7 @@ public class TropiLock implements ClientModInitializer {
         alignTicks = 0;
         alignGain = theoreticalConversion(MinecraftClient.getInstance());
         pulseBoost = 1.0;
+        confirmCount = 0;
         lastAlignYaw = player.getRootVehicle().getYaw();
     }
 
@@ -474,21 +478,28 @@ public class TropiLock implements ClientModInitializer {
         float err = MathHelper.wrapDegrees(bearingToTarget(player) - yaw);
         double miss = Math.abs(dist * Math.sin(Math.toRadians(err)));
 
-        if (miss < ALIGN_MISS || Math.abs(err) < 0.0002F) {
+        if (miss < ALIGN_MISS || Math.abs(err) < 0.00005F) {
+            // Bon, mais on re-mesure apres une nouvelle stabilisation avant de figer
+            if (++confirmCount < ALIGN_CONFIRMATIONS) {
+                stableTicks = 0;
+                return;
+            }
             stopAlign();
             activate(player);
             player.sendMessage(Text.literal(String.format(
-                    "[TropiLock] Aligne (ecart prevu %.2f bloc), cap fige.", miss))
+                    "[TropiLock] Aligne (ecart prevu %.3f bloc), cap fige.", miss))
                     .formatted(Formatting.GREEN), false);
             return;
         }
+
+        confirmCount = 0;
 
         if (alignGain <= 1.0E-6) {
             alignGain = theoreticalConversion(MinecraftClient.getInstance());
         }
 
         // 80 % de l'ecart par impulsion : on approche sans depasser
-        double factor = miss < 1.0 ? 1.0 : 0.8;
+        double factor = miss < 0.5 ? 1.0 : 0.8;
         double pulse = (err * factor / alignGain) * pulseBoost;
         yawBeforePulse = yaw;
         lastPulse = pulse;
